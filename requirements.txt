@@ -1,0 +1,39 @@
+# For a nicer terminal
+ipython
+
+# For plotting graphs
+matplotlib
+
+# For reading sets of data
+pandas
+
+# For vector
+numpy
+
+scipy
+
+statsmodels
+
+scikit-learn
+
+# Sandbox
+# For transpiling code to C
+cython
+
+# For jit compilation
+numba
+
+# word stemming
+nltk
+
+# URL extraction
+urlextract
+
+# for bypassing unused steps (dev only)
+goto-statement
+
+dautil
+
+# ida
+tensorflow
+keras
