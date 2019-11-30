@@ -1,179 +1,145 @@
-import numpy as np
-import matplotlib.pyplot as plt
+from sklearn.neural_network import MLPClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, accuracy_score
 from sklearn.svm import SVC
-from sklearn.ensemble import GradientBoostingClassifier
-import random
-from scipy.ndimage.filters import gaussian_filter1d
-from scipy.interpolate import UnivariateSpline
+import matplotlib.pyplot as plt
+import os
+import numpy as np
+
 import warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore", category=FutureWarning)
 
+def load_data(bit_depth, row_limit = 15000):
+    ch = []
+    resp = []
 
-def into_features_vect(chall):
-    "Transforms a challenge into a feature vector"
-    phi = []
-    for i in range(1,len(chall)):
-        s = sum(chall[i:])
-        if s % 2 == 0:
-            phi.append(1)
-        else:
-            phi.append(-1)
-    phi.append(1)
-    return phi
+    with open(os.path.join(os.path.dirname(__file__), 'data', f'Base{bit_depth}.txt'), 'r') as fp:
+        for idx, line in enumerate(fp):
+            if idx >= row_limit:
+                break
+            data = line.strip().split(' ')
+            ch.append(np.asarray(list(data[0]), dtype=np.int8))
+            resp.append(np.asarray(data[1], dtype=np.int8))
 
+    X = np.asarray(ch)
+    y = np.array(resp)
 
-class Stage:
-    _delay_out_a = 0.
-    _delay_out_b = 0.
-    _selector = 0
+    return X, y
 
-    def __init__(self,delay_a,delay_b):
-        self._delay_out_a = delay_a
-        self._delay_out_b = delay_b
+def der_challenge(challenges):
+    challenges_der = np.zeros(challenges.shape)
+    challenges = 1 - 2 * challenges
 
-    def set_selector(self,s):
-        self._selector = s
+    for i in range(len(challenges)):
+        challenge = challenges[i]
 
-    def get_output(self,delay_in_a, delay_in_b):
-        if self._selector == 0:
-            return (delay_in_a  + self._delay_out_a,
-                    delay_in_b  + self._delay_out_b)
-        else:
-            return (delay_in_b  + self._delay_out_a,
-                    delay_in_a  + self._delay_out_b)
+        challenges_der[i][0] = challenge[0]
 
+        for j in range(1, len(challenge)):
+            challenges_der[i][j] = challenges_der[i][j-1] * challenge[j]
 
-class ArbiterPUF:
+    return challenges_der
 
-    def __init__(self,n):
-        self._stages = []
+X, y = load_data(32)
+X_der = der_challenge(X)
+np.unique(y, return_counts=True)
+X_train, X_test, y_train, y_test = train_test_split(X_der, y)
 
-        for _ in range(n):
-            d1 = random.random()
-            d2 = random.random()
-            self._stages.append(Stage(d1,d2))
+lr_model = LogisticRegression()
+lr_model.fit(X_train, y_train)
+y_test_predicted = lr_model.predict(X_test)
 
-    def get_output(self,chall):
-        # Set challenge
-        for stage,bit in zip(self._stages,chall):
-            stage.set_selector(bit)
+print('Accuracy: ', accuracy_score(y_test, y_test_predicted))
+print('F1: ', f1_score(y_test, y_test_predicted))
 
-        # Compute output
-        delay = (0,0)
-        for s in self._stages:
-            delay = s.get_output(delay[0],delay[1])
+def get_model_errors(X_train, y_train, X_test, y_test):
+    bit_depth = X_train.shape[1]
+    lr_model = LogisticRegression()
+    svm_model = SVC()
+    nn_model = MLPClassifier(
+        solver='lbfgs',
+        alpha=1e-5,
+        hidden_layer_sizes=(int(bit_depth * 2), int(bit_depth * 1.5)),
+        random_state=1
+    )
 
-        if delay[0] < delay[1]:
-            return 0
-        else:
-            return 1
+    lr_model.fit(X_train, y_train)
+    svm_model.fit(X_train, y_train)
+    nn_model.fit(X_train, y_train)
 
+    errors = [
+        accuracy_score(y_test, lr_model.predict(X_test)),
+        accuracy_score(y_test, svm_model.predict(X_test)),
+        accuracy_score(y_test, nn_model.predict(X_test))
+    ]
 
-class Stage:
-    _delay_out_a = 0.
-    _delay_out_b = 0.
-    _selector = 0
+    return np.array(errors)
 
-    def __init__(self,delay_a,delay_b):
-        self._delay_out_a = delay_a
-        self._delay_out_b = delay_b
+def show_data_count_dependency(bit_depth, data_sizes):
+    X, y = load_data(bit_depth)
+    X_der = der_challenge(X)
+    accuracy_data = []
+    for training_size in data_sizes:
+        training_size = int(training_size)
+        X_train = X_der[:training_size]
+        y_train = y[:training_size]
+        X_test = X_der[training_size:training_size + 3000]
+        y_test = y[training_size:training_size + 3000]
 
-    def set_selector(self,s):
-        self._selector = s
+        errors = get_model_errors(X_train, y_train, X_test, y_test)
+        accuracy_data.append(np.concatenate([np.array([training_size]), errors], axis=None))
 
-    def get_output(self,delay_in_a, delay_in_b):
-        if self._selector == 0:
-            return (delay_in_a  + self._delay_out_a,
-                    delay_in_b  + self._delay_out_b)
-        else:
-            return (delay_in_b  + self._delay_out_a,
-                    delay_in_a  + self._delay_out_b)
+    accuracy_data = np.array(accuracy_data)
 
+    plt.figure(figsize=(12,6))
 
-class ArbiterPUF:
+    plt.plot(accuracy_data[:,0], accuracy_data[:,1], marker='.', color='green', label='Logistic Regression')
+    plt.plot(accuracy_data[:,0], accuracy_data[:,2], marker='.', color='blue', label='SVM')
+    plt.plot(accuracy_data[:,0], accuracy_data[:,3], marker='.', color='orange', label='Multilayer neural network')
 
-    def __init__(self,n):
-        self._stages = []
+    plt.title(f'Bit depth: {bit_depth}')
+    plt.xticks(np.linspace(np.min(data_sizes), np.max(data_sizes), 10), fontsize=10)
 
-        for _ in range(n):
-            d1 = random.random()
-            d2 = random.random()
-            self._stages.append(Stage(d1,d2))
+    plt.xlabel('Dataset size', fontsize=14)
+    plt.ylabel('Accuracy', fontsize=14)
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.show()
 
-    def get_output(self,chall):
-        # Set challenge
-        for stage,bit in zip(self._stages,chall):
-            stage.set_selector(bit)
+show_data_count_dependency(32, np.linspace(50, 1800, 40))
+show_data_count_dependency(128, np.linspace(100, 5000, 70))
 
-        # Compute output
-        delay = (0,0)
-        for s in self._stages:
-            delay = s.get_output(delay[0],delay[1])
+def show_N_count_dependency(files):
+    accuracy_data = []
 
-        if delay[0] < delay[1]:
-            return 0
-        else:
-            return 1
+    for file in files:
+        X, y = load_data(file)
+        X_der = der_challenge(X)
 
+        training_size = 10000
+        X_train, X_test, y_train, y_test = train_test_split(X_der[:training_size], y[:training_size])
 
-N  = 32     # Size of the PUF
-LS = 600    # Size learning set
-TS = 10000  # Size testing set
-apuf = ArbiterPUF(N)
+        errors = get_model_errors(X_train, y_train, X_test, y_test)
+        accuracy_data.append(errors)
 
-# Creating training suite
-learningX = [[random.choice([0,1]) for _ in range(N)] for _ in range(LS)] # Challenges
-learningY = [apuf.get_output(chall) for chall in learningX] # Outputs PUF
+    accuracy_data = np.array(accuracy_data)
 
-# Creating testing suite
-testingX = [[random.choice([0,1]) for _ in range(N)] for _ in range(TS)]
-testingY = [apuf.get_output(chall) for chall in testingX]
+    plt.figure(figsize=(12,6))
 
-# Convert challenges into feature vectors
-learningX = [into_features_vect(c) for c in learningX]
-testingX = [into_features_vect(c) for c in testingX]
+    x = np.linspace(1, len(files), len(files))
 
-# Prediction
-lr = LogisticRegression()
-lr.fit(learningX, learningY)
-print("Score arbiter PUF (%d stages): %f" % (N,lr.score(testingX,testingY)))
+    plt.plot(x, accuracy_data[:,0], marker='.', color='green', label='Logistic Regression')
+    plt.plot(x, accuracy_data[:,1], marker='.', color='blue', label='SVM')
+    plt.plot(x, accuracy_data[:,2], marker='.', color='orange', label='Multilayer neural network')
 
-svc = SVC()
-svc.fit(learningX, learningY)
-print("Score arbiter PUF (%d stages): %f" % (N, svc.score(testingX, testingY)))
+    plt.xticks(x,files, fontsize=14)
 
-gb = GradientBoostingClassifier()
-gb.fit(learningX, learningY)
-print("Score arbiter PUF (%d stages): %f" % (N, gb.score(testingX, testingY)))
+    plt.xlabel('N', fontsize=14)
+    plt.ylabel('Accuracy', fontsize=14)
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.show()
 
-learning_set_numbers = np.arange(100, 1000, 50)
-scores = []
-
-for i in learning_set_numbers:
-    N  = 32     # Size of the PUF
-    LS = i    # Size learning set
-    TS = 10000  # Size testing set
-    apuf = ArbiterPUF(N)
-
-    # Creating training suite
-    learningX = [[random.choice([0,1]) for _ in range(N)] for _ in range(LS)] # Challenges
-    learningY = [apuf.get_output(chall) for chall in learningX] # Outputs PUF
-
-    # Creating testing suite
-    testingX = [[random.choice([0,1]) for _ in range(N)] for _ in range(TS)]
-    testingY = [apuf.get_output(chall) for chall in testingX]
-
-    # Convert challenges into feature vectors
-    learningX = [into_features_vect(c) for c in learningX]
-    testingX = [into_features_vect(c) for c in testingX]
-
-    # Prediction
-    lr = LogisticRegression()
-    lr.fit(learningX, learningY)
-    scores.append(lr.score(testingX, testingY))
-
-plt.plot(learning_set_numbers, scores, LineWidth=2)
-plt.ylabel('Accuracy')
-plt.xlabel('N')
-plt.show()
+files = [8, 16, 24, 32, 48, 64, 96, 128]
+show_N_count_dependency(files)
